@@ -433,8 +433,7 @@ We removed any with SEARCH_WARRANT or DPCSA_S_81_SRCH_WITH_WARRANT, as well as P
 
 There was a large amount of missing data in the model variables, with Racial Appearance having 3404 (18%) missing values, search reason having 998 (5%) missing values, and Age and Sex less than 1% missing (Figure XX attached).  
 
-We present two analyses: 1. using only searches which had compete data for Find, Racial_Appearence, age, sex, search reason, which assumes there is no relationship between missingness and any measured or unmeasured variables (Missing completely at reandom; MCAR) and 2. using multiple imputation, which assumes the missingness can be modelled by measured variables (Missing at Random; MAR).  We imputed data using a 2 level model with the jomoImpute function in the jomo package with a burning of 5000 and 20 imputed datasets each 100 iterations apart. Variables in the imputation model included all model variables (Age, Sex, Reasch reason and Racial Category and random effect of Reporting Station) as well as X003.VEHICLE, VEHICLE_CHECK ,PERSON_CHECK, Year, Operation_Type, PACKAGE_or_THING , Contacting.Member.Rank (see appendix for how these were chosen). Convergence was checked visually. 
- 
+
 
 
 
