@@ -1,0 +1,440 @@
+---
+title: "Find analysis"
+author: "Gordana"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r message=FALSE, warning=FALSE}
+library(mice)
+library(emmeans)
+library(tidyverse)
+library(glmmTMB)
+library(DHARMa)
+library(table1)
+library(gridExtra )
+```
+
+## Data
+
+### Missing data
+
+```{r}
+load(file = "../../data/for_impute.Rdata")
+
+VIM::aggr(for_impute, numbers=TRUE, sortVars=TRUE,cex.axis = .7, prop = FALSE,
+          combined = TRUE, labels=names(for_impute),
+          oma = c(8,3,2,4))
+
+
+```
+
+### Table 2 - Data summary
+
+```{r}
+
+load(file = "../../data/imputed_20_mids")
+
+# full data
+full_data <- complete(mids_data, action = 0)  %>% 
+  select(Found, Age.of.Contact, Sex, RacialCat, Search.Reason, Reporting.Station,
+         Operation_Type) 
+
+
+write.csv(full_data, file = "../../data/full_data.csv", row.names = FALSE)
+
+Table1 <- table1( ~ Age.of.Contact + Sex + RacialCat +
+         Search.Reason + Operation_Type, data = full_data)
+Table1
+write.csv(Table1, file = "../results/Table1.csv", row.names = FALSE)
+
+```
+
+
+### Table 3 - Find rates by racial appearence
+
+
+
+```{r}
+dis_ratios <- full_data %>% 
+  group_by(RacialCat, Found) %>% 
+  summarise(n = n()) %>% 
+  pivot_wider(names_from = Found, values_from = n) %>% 
+  mutate(Found = `TRUE`,
+         Total = (`TRUE` + `FALSE`),
+         find_rate = Found / Total) %>% 
+  select(RacialCat, Total, Found, find_rate)
+
+dis_ratios$dis_ratio = dis_ratios$find_rate/dis_ratios$find_rate[dis_ratios$RacialCat == "CAUCASIAN"][1]
+
+dis_ratios <- dis_ratios %>% 
+  as.data.frame() %>% 
+  arrange(as.character(RacialCat), .by_group = TRUE)
+
+dis_ratios
+```
+
+### Figure 1 a - Find rates by operation type
+
+
+```{r}
+full_data %>% 
+  group_by(Operation_Type, Found) %>% 
+  summarise(n = n()) %>% 
+  pivot_wider(names_from = Found, values_from = n) %>% 
+  mutate(find_rate = `TRUE` / (`TRUE` + `FALSE`)) 
+```
+
+## Analysis
+
+### Primary - Racial Appearence
+
+Complete case analysis
+
+```{r}
+
+# extract complete cases
+complete.cases <- complete(mids_data, action = 0)  %>% 
+  select(Found, Age.of.Contact, Sex, RacialCat, Search.Reason, Reporting.Station,
+         Operation_Type) %>% 
+  na.omit()
+
+# fit model to complete cases
+vic_complete <- glmmTMB(Found ~ Age.of.Contact  + Sex + RacialCat + Search.Reason +
+                      (1|Reporting.Station), 
+                      data = complete.cases,
+                      family = binomial,
+                      control=glmmTMBControl(optimizer=optim,
+                                             optArgs=list(method="BFGS")))
+
+# check residuals 
+simulationOutput <- simulateResiduals(fittedModel = vic_complete , plot = F)
+res <- residuals(simulationOutput, quantileFunction = qnorm, outlierValues = c(-7,7))
+scatter.smooth(res ~ predict(vic_complete, re.form = NA))
+
+```
+
+Calculate relative risks and confidence intervals
+
+```{r}
+OT_em <- emmeans(vic_complete, ~ RacialCat)
+OT_em_log <- regrid(OT_em, "log")
+cont_OT = contrast(OT_em_log, "trt.vs.ctrl",type = "response",
+                   exclude = c("LATIN AMERICAN","OTHER","MEDITERRANEAN","INDIAN SUBCONTINENTAL"))
+
+
+comp_result = bind_cols(confint(cont_OT), p.value = summary(cont_OT)$p.value) %>% 
+    as.data.frame() %>% 
+  mutate(data = "complete cases")
+
+comp_result
+
+```
+
+
+Imputed data analysis
+
+```{r}
+
+# this code takes ~ 10 minutes, so i have saved the fitted model
+# vic_imputed <- with(data = mids_data,
+#                  exp = glmmTMB(Found ~ Age.of.Contact  + Sex + RacialCat + Search.Reason +
+#                                (1|Reporting.Station), 
+#                                family = binomial,
+#                                control=glmmTMBControl(optimizer=optim,
+#                                                       optArgs=list(method="BFGS"))))
+# 
+# 
+# 
+# 
+# save(vic_imputed,file = "../results/vic_imputed")
+load(file = "../results/vic_imputed")
+
+
+OT_em_imp <- emmeans(vic_imputed, ~ RacialCat)
+OT_em_log_imp <- regrid(OT_em_imp, "log")
+cont_OT_imp = contrast(OT_em_log_imp, "trt.vs.ctrl",type = "response",
+                   exclude = c("LATIN AMERICAN","OTHER","MEDITERRANEAN","INDIAN SUBCONTINENTAL"))
+
+imp_result = bind_cols(confint(cont_OT_imp), p.value = summary(cont_OT_imp)$p.value) %>% 
+    as.data.frame() %>% 
+  mutate(data = "imputed data")
+
+imp_result
+```
+
+#### Plot
+
+Here I create several plots and then stitch them all into one below
+
+
+```{r}
+p = position_dodge(width=0.6)
+
+
+# Plot of confidence intervals
+CI_plot <- bind_rows(comp_result, imp_result) %>% 
+  ggplot(aes(y = contrast, group = data)) + 
+  geom_vline(xintercept = 1) +
+  geom_point(aes(x=ratio, shape=data), size=2, position = p) +
+  geom_linerange(aes(xmin=asymp.LCL, xmax=asymp.UCL, lty = data ), position = p) +
+  coord_cartesian(ylim=c(1,5), xlim=c(0.58, 1.25))+
+  annotate("text", x = 0.85, y = 4.8, label = "less items found", size = 3) +
+  annotate("text", x = 1.15, y = 4.8, label = "more items found", size = 3) +
+  xlab("disproportionality ratio")+
+  theme_classic() +
+  theme(legend.position = "none")+ 
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y= element_blank())
+
+# CI_plot 
+
+
+
+combined_results <- bind_rows(imp_result, comp_result) %>% 
+  mutate(p.value = ifelse(p.value < 0.001, "<0.001", format(round(p.value,3), nsmall = 3)),
+         ratio = round(ratio, 2),
+         conf.low = format(round(asymp.LCL,2), nsmall = 2),
+         conf.high = format(round(asymp.UCL,2), nsmall = 2),
+         contrast = str_to_title(contrast, locale = "en")) %>% 
+  select(data, contrast, ratio, conf.low, conf.high, p.value) %>%
+  mutate(estimate_lab = paste0(ratio, " (", conf.low, "-", conf.high, ")")) %>% 
+  bind_rows(
+    data.frame(
+      data = "Data",
+      contrast = "Racial Appearence",
+      p.value = "p-value",
+      estimate_lab = "Disproportionality ratio (95% CI)"
+    )
+  ) %>% 
+  mutate(model = fct_rev(fct_relevel(data, "Data"))) 
+
+
+p_left <- 
+  combined_results  %>% 
+  ggplot(aes(y = contrast, group = data))+
+  geom_text(aes(x = 0, label = contrast), hjust = 0, fontface = "bold")+
+  geom_text(
+    aes(x = 0.9, label = estimate_lab),
+    hjust = 1,
+    fontface = ifelse(combined_results$estimate_lab == "Disproportionality ratio (95% CI)", "bold", "plain"), 
+    position = p
+  )+
+  theme_void() +
+  coord_cartesian(xlim = c(0, 0.9))
+# p_left
+
+
+p_right <-
+  combined_results  %>% 
+  ggplot() +
+  geom_text(
+    aes(x = 0, y = contrast, group = data, label = p.value),
+    hjust = 0,
+    fontface = ifelse(combined_results$p.value == "p-value", "bold", "plain"), 
+    position = p
+  ) +
+  theme_void() +
+  xlim(-0.2,0.3)
+
+ # p_right
+ 
+ 
+ p_data <-
+  combined_results  %>% 
+  ggplot() +
+  geom_text(
+    aes(x = 0, y = contrast, group = data, label = data),
+    hjust = 1,
+    position = p,
+    fontface = ifelse(combined_results$data == "Data", "bold", "plain"), 
+  ) +
+  theme_void() +
+   xlim(-1,0.2)
+
+ # p_data
+```
+
+
+Combined plot 
+
+```{r, fig.height=3.5, fig.width=10}
+library(patchwork)
+# final plot arrangement
+p_left + CI_plot + p_right + p_data + plot_layout(ncol = 4, widths = c(4.3,3,1,1.5))
+
+ggsave(filename = "../results/dis_ratio_plot.tiff", width = 10, height = 3.5)
+```
+
+
+
+### Secondary - Find rates by operation type
+
+Add a fixed effect of Operation type to the existing model, then test for an effect of operation type.
+
+```{r}
+vic_complete_OT <- update(vic_complete, ~ .+ Operation_Type,
+                           control = glmmTMBControl(rank_check = "adjust"))
+
+anova(vic_complete, vic_complete_OT)
+```
+p<0.001
+
+Calculate estimated find rates by operation type
+
+```{r}
+
+OT_em_complete <- emmeans(vic_complete_OT, ~ Operation_Type, type = "response")
+
+OT_result = bind_cols(confint(OT_em_complete), 
+                      p.value = summary(OT_em_complete)$p.value) %>% 
+    as.data.frame() %>% 
+  mutate(data = "complete")
+
+OT_result_plot <- OT_result %>% 
+  mutate(prob = round(prob*100, 1),
+         conf.low = format(round(asymp.LCL*100,1), nsmall = 1),
+         conf.high = format(round(asymp.UCL*100,1), nsmall = 1)) %>% 
+  select( Operation_Type, prob, conf.low, conf.high) %>%
+  mutate(estimate_lab = paste0(format(prob, nsmall = 1), " (", conf.low, " - ", conf.high, ")")) 
+```
+
+#### Plot
+
+Create separate plots 
+
+```{r}
+CI_plot <- OT_result %>% 
+  ggplot(aes(y = Operation_Type)) + 
+  geom_point(aes(x=prob*100), size=2, position = p) +
+  geom_linerange(aes(xmin=asymp.LCL*100, xmax=asymp.UCL*100), position = p) +
+  xlab("Find rate (%)")+
+    annotate("text", x = 10, y = 8, hjust = 0,  label = "Predicted find rate (95% CI)", fontface = "bold")+
+  theme_classic() +
+  theme(legend.position = "none")+ 
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y= element_blank(),
+        axis.text.y= element_blank(),
+        axis.title.y= element_blank())+
+  coord_cartesian(ylim = c(1,8), xlim=c(12, 60))
+# CI_plot
+
+ot_middle <- OT_result_plot  %>% 
+  ggplot(aes(y = Operation_Type))+
+  geom_text(
+    aes(x = 1, label = estimate_lab),
+    hjust = 1,
+    fontface = ifelse(OT_result_plot$estimate_lab == "Find rate (95% CI)", "bold", "plain"), 
+    position = p
+  )+
+  coord_cartesian(xlim = c(0.5,1), ylim = c(1,8))+
+  theme_void() 
+# ot_middle
+
+
+find_rates_ot <- full_data %>% 
+  group_by(Operation_Type, Found) %>% 
+  summarise(n = n()) %>% 
+  pivot_wider(names_from = Found, values_from = n) %>% 
+  mutate(Found = `TRUE`,
+         Total = (`TRUE` + `FALSE`),
+         find_rate = Found / Total*100) %>% 
+  select(Operation_Type, Total, Found, find_rate) %>% 
+  mutate(tot = paste0(Found, "/", Total),
+         fr = paste0(format(round(find_rate, 1), nsmall = 1) , "%")) 
+
+ot_raw <- find_rates_ot  %>% 
+  ggplot(aes(y = Operation_Type))+
+  geom_text(
+    aes(x = 0.3, label = Operation_Type),
+    hjust = 0,
+    position = p
+  )+
+  annotate("text", x = 0.3, y = 8, hjust = 0, label = "Operation Type", fontface = "bold")+
+  geom_text(
+    aes(x = 1, label = tot),
+    hjust = 0,
+    position = p
+  )+
+  annotate("text", x = 1, y = 8, hjust = 0, label = "Raw finds", fontface = "bold")+
+  geom_text(
+    aes(x = 1.7, label = fr),
+    hjust = 0,
+    position = p
+  )+
+  annotate("text", x = 1.7, y = 8, hjust = 0, label = "Raw find rate", fontface = "bold")+
+  coord_cartesian(xlim = c(0.3,2.2), ylim = c(1,8))+
+  theme_void() 
+
+# ot_raw
+```
+
+Combine
+
+```{r, fig.height=4, fig.width=10}
+
+ot_raw + CI_plot + ot_middle+ plot_layout(ncol = 3, widths = c(5, 3.5, 1.5))
+
+ggsave(filename = "../results/find_rate_plot.tiff", width = 10, height = 4)
+
+```
+
+
+
+### Secondary - Disproportionailty by operation type
+
+```{r}
+
+# remove small groups
+complete.cases.reduced <-  complete(mids_data, action = 0) %>% 
+  filter(!RacialCat %in% c("OTHER", "LATIN AMERICAN", "INDIAN SUBCONTINENTAL", "MEDITERRANEAN"),
+         Operation_Type %in% c("Crime", "Transit", "Uniform")) %>% 
+  mutate(RacialCat = droplevels(RacialCat),
+         Operation_Type = droplevels(Operation_Type))
+
+# fit base model
+vic_complete_reduced <- glmmTMB(Found ~ Age.of.Contact  + Sex + RacialCat + Search.Reason + Operation_Type +
+                      (1|Reporting.Station), 
+                      data = complete.cases.reduced,
+                      family = binomial,
+                      control=glmmTMBControl(optimizer=optim,
+                                             optArgs=list(method="BFGS")))
+# add interaction
+vic_complete_reduced_int <- update(vic_complete_reduced, ~ .+ Operation_Type:RacialCat,
+                           control = glmmTMBControl(rank_check = "adjust"))
+
+
+anova(vic_complete_reduced, vic_complete_reduced_int)
+
+```
+p = 0.4239
+
+
+
+
+## Methods
+
+All analyses were conducted in R version 4.0.3.
+
+### Data 
+
+We classified racial appearance ….
+We combined "ABORIGINAL","BOTH TSI & ABORIGINAL","TORRES STRAIT ISLANDER (TSI)" into "ABORIGINAL and/or TSI" and coded "NO INFO PROVIDED", "NOT STATED / UNKNOWN" as Missing
+Unknown sex was coded to Missing
+Recruit (small numbers) combined into Const
+Coded search reason by combining to weapons, drugs and graffiti
+We combined finding package or thing due to small numbers
+We truncated age at 80
+Find is any of PROHIBITED.WEAPONS, DANGEROUS.ARTICLES, ,CONTROLLED.WEAPONS,.ARTICLES,GRAFFITI.IMPLEMENTS, VOLATILE.SUBSTANCES.TYPES
+We removed any with SEARCH_WARRANT or DPCSA_S_81_SRCH_WITH_WARRANT, as well as Person.Reports = No Person data
+
+There was a large amount of missing data in the model variables, with Racial Appearance having 3404 (18%) missing values, search reason having 998 (5%) missing values, and Age and Sex less than 1% missing (Figure XX attached).  
+
+We present two analyses: 1. using only searches which had compete data for Find, Racial_Appearence, age, sex, search reason, which assumes there is no relationship between missingness and any measured or unmeasured variables (Missing completely at reandom; MCAR) and 2. using multiple imputation, which assumes the missingness can be modelled by measured variables (Missing at Random; MAR).  We imputed data using a 2 level model with the jomoImpute function in the jomo package with a burning of 5000 and 20 imputed datasets each 100 iterations apart. Variables in the imputation model included all model variables (Age, Sex, Reasch reason and Racial Category and random effect of Reporting Station) as well as X003.VEHICLE, VEHICLE_CHECK ,PERSON_CHECK, Year, Operation_Type, PACKAGE_or_THING , Contacting.Member.Rank (see appendix for how these were chosen). Convergence was checked visually. 
+ 
+
+
+
