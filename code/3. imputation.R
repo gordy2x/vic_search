@@ -10,6 +10,7 @@ library(mice)
 library(glmmTMB)
 library(broom.mixed)
 library(emmeans)
+library(naniar)
 
 
 load(file = "for_impute.Rdata")
@@ -21,6 +22,14 @@ fml <-  Indigeneous.Status +  RacialCat + Search.Reason +
   Age.of.Contact + Sex   ~  
   X003.VEHICLE + VEHICLE_CHECK + PERSON_CHECK+ Year + Operation_Type +
   PACKAGE_or_THING + Contacting.Member.Rank + (1|Reporting.Station)
+
+
+for_little <- for_impute %>% 
+  select(Indigeneous.Status,RacialCat,Search.Reason,Age.of.Contact,Sex,
+         X003.VEHICLE,VEHICLE_CHECK,PERSON_CHECK,Year,Operation_Type,
+         PACKAGE_or_THING,Contacting.Member.Rank)
+
+mcar_test(for_little)
 
 # start <- Sys.time()
 # imp <- jomoImpute(for_impute , formula=fml,

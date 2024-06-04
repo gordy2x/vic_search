@@ -13,7 +13,8 @@ library(tidyverse)
 library(glmmTMB)
 library(DHARMa)
 library(table1)
-library(gridExtra )
+library(gridExtra)
+library(naniar)
 ```
 
 ## Data
@@ -29,6 +30,15 @@ VIM::aggr(for_impute, numbers=TRUE, sortVars=TRUE,cex.axis = .7, prop = FALSE,
 
 
 ```
+```{r}
+for_little <- for_impute %>% 
+  select(Indigeneous.Status,RacialCat,Search.Reason,Age.of.Contact,Sex,
+         X003.VEHICLE,VEHICLE_CHECK,PERSON_CHECK,Year,Operation_Type,
+         PACKAGE_or_THING,Contacting.Member.Rank)
+
+mcar_test(for_little)
+```
+
 
 ### Table 2 - Data summary
 
@@ -90,7 +100,50 @@ full_data %>%
 
 ### Primary - Racial Appearence
 
-Complete case analysis
+
+
+#### Imputed data analysis
+
+```{r}
+
+# this code takes ~ 10 minutes, so i have saved the fitted model
+# vic_imputed <- with(data = mids_data,
+#                  exp = glmmTMB(Found ~ Age.of.Contact  + Sex + RacialCat + Search.Reason +
+#                                (1|Reporting.Station), 
+#                                family = binomial,
+#                                control=glmmTMBControl(optimizer=optim,
+#                                                       optArgs=list(method="BFGS"))))
+# 
+# 
+# 
+# 
+# save(vic_imputed,file = "../results/vic_imputed")
+load(file = "../results/vic_imputed")
+
+OT_em_imp <- emmeans(vic_imputed, ~ RacialCat)
+OT_em_log_imp <- regrid(OT_em_imp, "log")
+cont_OT_imp = contrast(OT_em_log_imp, "trt.vs.ctrl",type = "response",
+                   exclude = c("LATIN AMERICAN","OTHER","MEDITERRANEAN","INDIAN SUBCONTINENTAL"))
+
+imp_result = bind_cols(confint(cont_OT_imp), p.value = summary(cont_OT_imp)$p.value) %>% 
+    as.data.frame() %>% 
+  mutate(data = "imputed data")
+
+imp_result
+```
+
+
+```{r}
+imp_result %>% 
+  transmute(contrast,
+            perc_dec = round((1-ratio)*100),
+            perc_dec_lower = round((1-asymp.UCL)*100),
+            perc_dec_upper = round((1-asymp.LCL)*100))
+```
+
+
+
+#### Complete case analysis
 
 ```{r}
 
@@ -130,38 +183,6 @@ comp_result = bind_cols(confint(cont_OT), p.value = summary(cont_OT)$p.value) %>
 
 comp_result
 
-```
-
-
-Imputed data analysis
-
-```{r}
-
-# this code takes ~ 10 minutes, so i have saved the fitted model
-# vic_imputed <- with(data = mids_data,
-#                  exp = glmmTMB(Found ~ Age.of.Contact  + Sex + RacialCat + Search.Reason +
-#                                (1|Reporting.Station), 
-#                                family = binomial,
-#                                control=glmmTMBControl(optimizer=optim,
-#                                                       optArgs=list(method="BFGS"))))
-# 
-# 
-# 
-# 
-# save(vic_imputed,file = "../results/vic_imputed")
-load(file = "../results/vic_imputed")
-
-
-OT_em_imp <- emmeans(vic_imputed, ~ RacialCat)
-OT_em_log_imp <- regrid(OT_em_imp, "log")
-cont_OT_imp = contrast(OT_em_log_imp, "trt.vs.ctrl",type = "response",
-                   exclude = c("LATIN AMERICAN","OTHER","MEDITERRANEAN","INDIAN SUBCONTINENTAL"))
-
-imp_result = bind_cols(confint(cont_OT_imp), p.value = summary(cont_OT_imp)$p.value) %>% 
-    as.data.frame() %>% 
-  mutate(data = "imputed data")
-
-imp_result
 ```
 
 #### Plot
@@ -271,155 +292,13 @@ ggsave(filename = "../results/dis_ratio_plot.tiff", width = 10, height = 3.5)
 
 
 
-### Secondary - Find rates by operation type
-
-Add a fixed effect of Operation type to the existing model, then test for an effect of operation type.
-
-```{r}
-vic_complete_OT <- update(vic_complete, ~ .+ Operation_Type,
-                           control = glmmTMBControl(rank_check = "adjust"))
-
-anova(vic_complete, vic_complete_OT)
-```
-p<0.001
-
-Calculate estimated find rates by operation type
-
-```{r}
-
-OT_em_complete <- emmeans(vic_complete_OT, ~ Operation_Type, type = "response")
-
-OT_result = bind_cols(confint(OT_em_complete), 
-                      p.value = summary(OT_em_complete)$p.value) %>% 
-    as.data.frame() %>% 
-  mutate(data = "complete")
-
-OT_result_plot <- OT_result %>% 
-  mutate(prob = round(prob*100, 1),
-         conf.low = format(round(asymp.LCL*100,1), nsmall = 1),
-         conf.high = format(round(asymp.UCL*100,1), nsmall = 1)) %>% 
-  select( Operation_Type, prob, conf.low, conf.high) %>%
-  mutate(estimate_lab = paste0(format(prob, nsmall = 1), " (", conf.low, " - ", conf.high, ")")) 
-```
-
-#### Plot
-
-Create separate plots 
-
-```{r}
-CI_plot <- OT_result %>% 
-  ggplot(aes(y = Operation_Type)) + 
-  geom_point(aes(x=prob*100), size=2, position = p) +
-  geom_linerange(aes(xmin=asymp.LCL*100, xmax=asymp.UCL*100), position = p) +
-  xlab("Find rate (%)")+
-    annotate("text", x = 10, y = 8, hjust = 0,  label = "Predicted find rate (95% CI)", fontface = "bold")+
-  theme_classic() +
-  theme(legend.position = "none")+ 
-  theme(axis.line.y = element_blank(),
-        axis.ticks.y= element_blank(),
-        axis.text.y= element_blank(),
-        axis.title.y= element_blank())+
-  coord_cartesian(ylim = c(1,8), xlim=c(12, 60))
-# CI_plot
-
-ot_middle <- OT_result_plot  %>% 
-  ggplot(aes(y = Operation_Type))+
-  geom_text(
-    aes(x = 1, label = estimate_lab),
-    hjust = 1,
-    fontface = ifelse(OT_result_plot$estimate_lab == "Find rate (95% CI)", "bold", "plain"), 
-    position = p
-  )+
-  coord_cartesian(xlim = c(0.5,1), ylim = c(1,8))+
-  theme_void() 
-# ot_middle
-
-
-find_rates_ot <- full_data %>% 
-  group_by(Operation_Type, Found) %>% 
-  summarise(n = n()) %>% 
-  pivot_wider(names_from = Found, values_from = n) %>% 
-  mutate(Found = `TRUE`,
-         Total = (`TRUE` + `FALSE`),
-         find_rate = Found / Total*100) %>% 
-  select(Operation_Type, Total, Found, find_rate) %>% 
-  mutate(tot = paste0(Found, "/", Total),
-         fr = paste0(format(round(find_rate, 1), nsmall = 1) , "%")) 
-
-ot_raw <- find_rates_ot  %>% 
-  ggplot(aes(y = Operation_Type))+
-  geom_text(
-    aes(x = 0.3, label = Operation_Type),
-    hjust = 0,
-    position = p
-  )+
-  annotate("text", x = 0.3, y = 8, hjust = 0, label = "Operation Type", fontface = "bold")+
-  geom_text(
-    aes(x = 1, label = tot),
-    hjust = 0,
-    position = p
-  )+
-  annotate("text", x = 1, y = 8, hjust = 0, label = "Raw finds", fontface = "bold")+
-  geom_text(
-    aes(x = 1.7, label = fr),
-    hjust = 0,
-    position = p
-  )+
-  annotate("text", x = 1.7, y = 8, hjust = 0, label = "Raw find rate", fontface = "bold")+
-  coord_cartesian(xlim = c(0.3,2.2), ylim = c(1,8))+
-  theme_void() 
-
-# ot_raw
-```
-
-Combine
-
-```{r, fig.height=4, fig.width=10}
-
-ot_raw + CI_plot + ot_middle+ plot_layout(ncol = 3, widths = c(5, 3.5, 1.5))
-
-ggsave(filename = "../results/find_rate_plot.tiff", width = 10, height = 4)
-
-```
-
-
-
-### Secondary - Disproportionailty by operation type
-
-```{r}
-
-# remove small groups
-complete.cases.reduced <-  complete(mids_data, action = 0) %>% 
-  filter(!RacialCat %in% c("OTHER", "LATIN AMERICAN", "INDIAN SUBCONTINENTAL", "MEDITERRANEAN"),
-         Operation_Type %in% c("Crime", "Transit", "Uniform")) %>% 
-  mutate(RacialCat = droplevels(RacialCat),
-         Operation_Type = droplevels(Operation_Type))
-
-# fit base model
-vic_complete_reduced <- glmmTMB(Found ~ Age.of.Contact  + Sex + RacialCat + Search.Reason + Operation_Type +
-                      (1|Reporting.Station), 
-                      data = complete.cases.reduced,
-                      family = binomial,
-                      control=glmmTMBControl(optimizer=optim,
-                                             optArgs=list(method="BFGS")))
-# add interaction
-vic_complete_reduced_int <- update(vic_complete_reduced, ~ .+ Operation_Type:RacialCat,
-                           control = glmmTMBControl(rank_check = "adjust"))
-
-
-anova(vic_complete_reduced, vic_complete_reduced_int)
-
-```
-p = 0.4239
-
-
 
 
 ## Methods
 
 All analyses were conducted in R version 4.0.3.
 
-### Data 
+## Data 
 
 We classified racial appearance ….
 We combined "ABORIGINAL","BOTH TSI & ABORIGINAL","TORRES STRAIT ISLANDER (TSI)" into "ABORIGINAL and/or TSI" and coded "NO INFO PROVIDED", "NOT STATED / UNKNOWN" as Missing
